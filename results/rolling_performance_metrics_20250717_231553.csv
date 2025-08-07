@@ -1,0 +1,6 @@
+Strategy,Total Return,Annual Return,Volatility,Sharpe Ratio,Max Drawdown,VaR 95%,Negative Days,Transaction Costs
+Markowitz Max Sharpe,185.97%,12.42%,25.95%,0.402,-45.71%,-2.38%,48.5%,$1.65
+Markowitz Min Vol,198.58%,12.97%,24.59%,0.446,-47.00%,-2.18%,46.4%,$0.29
+Black Litterman,130.21%,9.74%,28.02%,0.276,-54.30%,-2.60%,47.7%,$5.53
+Risk Parity,207.97%,13.36%,26.57%,0.427,-47.47%,-2.43%,47.8%,$0.05
+Equal Weight,208.68%,13.39%,27.17%,0.419,-47.86%,-2.44%,48.5%,$0.00

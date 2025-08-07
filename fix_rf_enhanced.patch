@@ -1,0 +1,117 @@
+*** rf_enhanced_production.py	(original)
+--- rf_enhanced_production.py	(fixed)
+***************
+***  28,33 ****
+  import pandas as pd
+  import numpy as np
+  from joblib import Parallel, delayed
+
++ # 新增：PyPortfolioOpt 依赖
++ from pypfopt import EfficientFrontier, risk_models, expected_returns
++ from pypfopt.black_litterman import BlackLittermanModel
+  import logging
+  import yaml
+  import os
+---  28,36 ----
+  import pandas as pd
+  import numpy as np
+  from joblib import Parallel, delayed
+
++ # === 以下为新增的优化方法所需依赖 ===
++ from pypfopt import EfficientFrontier, risk_models, expected_returns
++ from pypfopt.black_litterman import BlackLittermanModel
++ # ====================================
+  import logging
+  import yaml
+  import os
+***************
+*** 130,135 ****
+  class RFEnhancedPortfolioOptimizer(RollingPortfolioOptimizer):
+      """
+      基于随机森林信号的组合优化器（生产级）
+
+--- 133,139 ----
+  class RFEnhancedPortfolioOptimizer(RollingPortfolioOptimizer):
+      """
+      基于随机森林信号的组合优化器（生产级）
++     增加两种 RF-enhanced 优化入口：markowitz 和 black-litterman
+      """
+
+***************
+*** 407,411 ****
+                  results['markowitz']      = self.optimize_markowitz
+-                 results['equal_weight']    = self.optimize_equal_weight
+-                 results['black_litterman'] = self.optimize_black_litterman
++                 results['equal_weight']    = self.optimize_equal_weight
++                 results['black_litterman'] = self.optimize_black_litterman
++                 # === 新增 RF-enhanced 两条路径 ===
++                 results['markowitz_rf_enhanced']      = self.optimize_markowitz_rf_enhanced
++                 results['black_litterman_rf_enhanced'] = self.optimize_black_litterman_rf_enhanced
+                  results['risk_parity']    = self.optimize_risk_parity
+                  results['min_variance']   = self.optimize_min_variance
+***********************************
+*** End of class definition. Insert after last method in the class:
+--- End of class definition. Insert after last method in the class:
+***************
+*** 600,605 ****
+      # … 类里面已经很多方法 …
+
+  # ===== 在这里插入下面两段代码 =====
+--- 614,619 ----
+      # … 类里面已经很多方法 …
+
+  # ===== 在这里插入下面两段代码 =====
+***************
+*** Inserted text after line 614 of rf_enhanced_production.py:
++    def optimize_markowitz_rf_enhanced(self, historical_prices, trade_date, cov_matrix):
++        """
++        RF 信号增强的 Markowitz max Sharpe 优化
++        """
++        # 1) 历史均值收益
++        mu_hist = expected_returns.mean_historical_return(historical_prices)
++
++        # 2) 当期 RF alpha
++        rf_alpha = self.generate_rf_alphas(trade_date)
++
++        # 3) 叠加信号
++        mu_enhanced = mu_hist.add(rf_alpha, fill_value=0.0)
++
++        # 4) 做 max Sharpe 优化
++        ef = EfficientFrontier(mu_enhanced, cov_matrix)
++        weights = ef.max_sharpe()
++        cleaned_w = ef.clean_weights()
++        ret, vol, shr = ef.portfolio_performance()
++        return {'weights': cleaned_w,
++                'performance': {'return': ret, 'volatility': vol, 'sharpe': shr}}
++
++    def optimize_black_litterman_rf_enhanced(self, historical_prices, trade_date, cov_matrix):
++        """
++        RF 信号增强的 Black-Litterman 优化
++        """
++        # 1) 市场平衡 prior
++        mu_prior = expected_returns.mean_historical_return(historical_prices)
++        delta = self.config.bl_risk_aversion
++
++        # 2) RF 观点作为 absolute views
++        rf_views = self.generate_rf_alphas(trade_date).to_dict()
++        omega = np.diag([self.config.min_confidence] * len(rf_views))
++
++        # 3) Black-Litterman
++        bl = BlackLittermanModel(
++            cov_matrix * delta,
++            absolute_views=rf_views,
++            omega=omega,
++            view_confidences=[1 - self.config.min_confidence] * len(rf_views)
++        )
++        mu_bl = bl.bl_returns()
++        cov_bl = bl.bl_cov()
++
++        # 4) max Sharpe 优化
++        ef = EfficientFrontier(mu_bl, cov_bl)
++        weights = ef.max_sharpe()
++        cleaned_w = ef.clean_weights()
++        ret, vol, shr = ef.portfolio_performance()
++        return {'weights': cleaned_w,
++                'performance': {'return': ret, 'volatility': vol, 'sharpe': shr}}
++    # ===== 结束插入 =====
+*** End of patch

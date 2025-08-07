@@ -1,0 +1,16 @@
+=== U.S. TREASURY DATA SUMMARY (via FRED) ===
+
+Data Period: 2015-01-01 to 2024-12-31
+Total Observations: 17930
+Total Metrics: 4
+Collection Date: 2025-07-04 23:17:29
+
+YIELD CURVE RATES:
+
+YIELD SPREADS & SLOPES:
+  term_spread_10y2y: 17930 observations
+  term_spread_10y3m: 15887 observations
+  aaa_treasury_spread: 15523 observations
+  baa_treasury_spread: 14428 observations
+
+LATEST VALUES (as of 2025-07-03):

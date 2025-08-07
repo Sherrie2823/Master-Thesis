@@ -1,0 +1,6 @@
+Strategy,Total Return,Annual Return,Volatility,Sharpe Ratio,Max Drawdown,VaR 95%,Negative Days,Transaction Costs
+Black Litterman,nan%,nan%,nan%,nan,nan%,nan%,73.1%,$0.00
+Risk Parity,nan%,nan%,nan%,nan,nan%,nan%,73.1%,$0.00
+Equal Weight,nan%,nan%,nan%,nan,nan%,nan%,73.1%,$0.00
+Markowitz Rf Enhanced,nan%,nan%,nan%,nan,nan%,nan%,73.1%,$0.00
+Black Litterman Rf Enhanced,nan%,nan%,nan%,nan,nan%,nan%,73.1%,$0.00

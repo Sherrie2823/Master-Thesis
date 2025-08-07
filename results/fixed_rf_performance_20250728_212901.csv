@@ -1,0 +1,4 @@
+Method,Total_Return,Annual_Return,Volatility,Sharpe_Ratio
+equal_weight,-inf,,,0
+markowitz_rf_enhanced,-inf,,,0
+black_litterman_rf_enhanced,-inf,,,0

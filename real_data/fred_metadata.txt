@@ -1,0 +1,167 @@
+=== FRED ECONOMIC DATA METADATA ===
+
+Data Period: 2015-01-01 to 2024-12-31
+Total Indicators: 33
+Collection Date: 2025-07-04 23:11:01
+
+FED_FUNDS_RATE:
+  Series ID: FEDFUNDS
+  Title: Federal Funds Effective Rate
+  Units: Percent
+  Frequency: Monthly
+  Last Updated: 2025-07-01 15:17:14-05
+
+TREASURY_10Y:
+  Series ID: DGS10
+  Title: Market Yield on U.S. Treasury Securities at 10-Year Constant Maturity, Quoted on an Investment Basis
+  Units: Percent
+  Frequency: Daily
+  Last Updated: 2025-07-03 15:17:00-05
+
+TREASURY_2Y:
+  Series ID: DGS2
+  Title: Market Yield on U.S. Treasury Securities at 2-Year Constant Maturity, Quoted on an Investment Basis
+  Units: Percent
+  Frequency: Daily
+  Last Updated: 2025-07-03 15:17:03-05
+
+TREASURY_3M:
+  Series ID: DGS3MO
+  Title: Market Yield on U.S. Treasury Securities at 3-Month Constant Maturity, Quoted on an Investment Basis
+  Units: Percent
+  Frequency: Daily
+  Last Updated: 2025-07-03 15:17:05-05
+
+REAL_FED_FUNDS:
+  Series ID: REAINTRATREARAT10Y
+  Title: 10-Year Real Interest Rate
+  Units: Percent
+  Frequency: Monthly
+  Last Updated: 2025-06-11 14:48:08-05
+
+GDP_GROWTH:
+  Series ID: GDPC1
+  Title: Real Gross Domestic Product
+  Units: Billions of Chained 2017 Dollars
+  Frequency: Quarterly
+  Last Updated: 2025-06-26 07:56:50-05
+
+UNEMPLOYMENT_RATE:
+  Series ID: UNRATE
+  Title: Unemployment Rate
+  Units: Percent
+  Frequency: Monthly
+  Last Updated: 2025-07-03 07:47:54-05
+
+EMPLOYMENT_RATIO:
+  Series ID: EMRATIO
+  Title: Employment-Population Ratio
+  Units: Percent
+  Frequency: Monthly
+  Last Updated: 2025-07-03 07:48:30-05
+
+INDUSTRIAL_PRODUCTION:
+  Series ID: INDPRO
+  Title: Industrial Production: Total Index
+  Units: Index 2017=100
+  Frequency: Monthly
+  Last Updated: 2025-06-17 08:27:56-05
+
+CPI_INFLATION:
+  Series ID: CPIAUCSL
+  Title: Consumer Price Index for All Urban Consumers: All Items in U.S. City Average
+  Units: Index 1982-1984=100
+  Frequency: Monthly
+  Last Updated: 2025-06-11 07:41:40-05
+
+CORE_CPI:
+  Series ID: CPILFESL
+  Title: Consumer Price Index for All Urban Consumers: All Items Less Food and Energy in U.S. City Average
+  Units: Index 1982-1984=100
+  Frequency: Monthly
+  Last Updated: 2025-06-11 07:41:06-05
+
+PCE_INFLATION:
+  Series ID: PCEPI
+  Title: Personal Consumption Expenditures: Chain-type Price Index
+  Units: Index 2017=100
+  Frequency: Monthly
+  Last Updated: 2025-06-27 07:43:25-05
+
+INFLATION_EXPECTATIONS:
+  Series ID: T5YIE
+  Title: 5-Year Breakeven Inflation Rate
+  Units: Percent
+  Frequency: Daily
+  Last Updated: 2025-07-03 16:02:14-05
+
+COMMERCIAL_LOANS:
+  Series ID: BUSLOANS
+  Title: Commercial and Industrial Loans, All Commercial Banks
+  Units: Billions of U.S. Dollars
+  Frequency: Monthly
+  Last Updated: 2025-07-03 16:46:43-05
+
+REAL_ESTATE_LOANS:
+  Series ID: REALLN
+  Title: Real Estate Loans, All Commercial Banks
+  Units: Billions of U.S. Dollars
+  Frequency: Monthly
+  Last Updated: 2025-07-03 15:17:48-05
+
+CREDIT_SPREAD:
+  Series ID: BAA10Y
+  Title: Moody's Seasoned Baa Corporate Bond Yield Relative to Yield on 10-Year Treasury Constant Maturity
+  Units: Percent
+  Frequency: Daily
+  Last Updated: 2025-07-03 16:02:03-05
+
+TED_SPREAD:
+  Series ID: TEDRATE
+  Title: TED Spread (DISCONTINUED)
+  Units: Percent
+  Frequency: Daily
+  Last Updated: 2022-01-28 16:01:02-06
+
+DOLLAR_INDEX:
+  Series ID: DTWEXBGS
+  Title: Nominal Broad U.S. Dollar Index
+  Units: Index Jan 2006=100
+  Frequency: Daily
+  Last Updated: 2025-06-30 15:19:44-05
+
+OIL_PRICE:
+  Series ID: DCOILWTICO
+  Title: Crude Oil Prices: West Texas Intermediate (WTI) - Cushing, Oklahoma
+  Units: Dollars per Barrel
+  Frequency: Daily
+  Last Updated: 2025-07-02 12:09:03-05
+
+CONSUMER_SENTIMENT:
+  Series ID: UMCSENT
+  Title: University of Michigan: Consumer Sentiment
+  Units: Index 1966:Q1=100
+  Frequency: Monthly
+  Last Updated: 2025-06-27 10:01:03-05
+
+VIX:
+  Series ID: VIXCLS
+  Title: CBOE Volatility Index: VIX
+  Units: Index
+  Frequency: Daily, Close
+  Last Updated: 2025-07-03 08:36:05-05
+
+TERM_SPREAD:
+  Series ID: T10Y2Y
+  Title: 10-Year Treasury Constant Maturity Minus 2-Year Treasury Constant Maturity
+  Units: Percent
+  Frequency: Daily
+  Last Updated: 2025-07-03 16:02:04-05
+
+CREDIT_CONDITIONS:
+  Series ID: DRBLACBS
+  Title: Delinquency Rate on Business Loans, All Commercial Banks
+  Units: Percent
+  Frequency: Quarterly, End of Period
+  Last Updated: 2025-05-21 16:17:27-05
+

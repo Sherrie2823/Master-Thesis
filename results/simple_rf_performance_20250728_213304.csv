@@ -1,0 +1,4 @@
+Method,Total_Return,Annual_Return,Volatility,Sharpe_Ratio,Max_Drawdown
+equal_weight,-inf,,,0,1.2546691253664406
+simple_rf_enhanced,-inf,,,0,1.2596676444370902
+rf_momentum,inf,,,0,1.5072129355673012

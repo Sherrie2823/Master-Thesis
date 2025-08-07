@@ -1,0 +1,107 @@
+# RF-Enhanced Portfolio Optimization Configuration
+# ==============================================
+# This file contains all configurable parameters for the RF-enhanced portfolio optimizer.
+# Modify these values according to your specific requirements and risk tolerance.
+
+rf_config:
+  # ================
+  # SIGNAL PARAMETERS
+  # ================
+
+  # Alpha signal generation method
+  # Options: 'volatility', 'linear', 'conservative'
+  alpha_scaling_method: 'volatility'
+
+  # Maximum alpha signal strength (as decimal, e.g., 0.05 = 5%)
+  max_alpha: 0.05
+
+  # Minimum confidence threshold for signal generation
+  # Lower values = more signals but potentially lower quality
+  # Higher values = fewer but higher quality signals
+  # Recommended range: 0.03 - 0.10
+  min_confidence: 0.05
+
+  # Black-Litterman uncertainty parameter
+  # Controls how much to trust RF views vs market equilibrium
+  uncertainty_kappa: 0.1
+
+
+  # Black-Litterman 风险厌恶系数（新增）
+  bl_risk_aversion: 3.0
+
+  # ===================
+  # ADVANCED PARAMETERS
+  # ===================
+
+  # Volatility scaling factor for 'volatility' method
+  # Controls signal strength relative to asset volatility
+  alpha_vol_scaler: 0.5
+
+  # Conservative scaling factor for 'conservative' method
+  # Scales down signals in conservative mode
+  conservative_scale: 0.8
+
+  # Probability clipping bounds to prevent extreme signals
+  # Format: [lower_bound, upper_bound]
+  prob_clip_bounds: [0.05, 0.95]
+
+  # Use covariance-enhanced uncertainty in Black-Litterman
+  # true = more sophisticated uncertainty modeling
+  # false = simple confidence-based uncertainty
+  use_covariance_uncertainty: true
+
+  # ====================
+  # PERFORMANCE SETTINGS
+  # ====================
+
+  # Number of parallel jobs for RF prediction
+  # Adjust based on your CPU cores (recommended: 2-8)
+  n_jobs: 4
+
+  # Enable detailed logging for debugging
+  enable_detailed_logging: true
+
+  # Logging level: 'DEBUG', 'INFO', 'WARNING', 'ERROR'
+  log_level: 'INFO'
+
+  # =====
+  # PATHS
+  # =====
+
+  # Path to RF model files (relative to project root)
+  models_path: 'src/models/ai_models'
+
+  # Path to features data (relative to project root)
+  features_path: 'data/processed'
+
+  # Log file name (will be created in logs/ directory)
+  log_file: 'rf_enhance.log'
+
+# ========================
+# CONFIGURATION GUIDELINES
+# ========================
+#
+# 1. SIGNAL TUNING:
+#    - Start with default values
+#    - Use grid search to optimize min_confidence
+#    - Monitor signal coverage vs quality trade-off
+#
+# 2. ALPHA SCALING:
+#    - 'volatility': Adapts to each asset's risk (recommended)
+#    - 'linear': Fixed scaling across all assets
+#    - 'conservative': Safe, smaller signals
+#
+# 3. PERFORMANCE:
+#    - Increase n_jobs for faster processing (up to CPU cores)
+#    - Set log_level to 'DEBUG' for troubleshooting
+#    - Use 'INFO' for production runs
+#
+# 4. RISK MANAGEMENT:
+#    - Keep max_alpha <= 0.10 (10%) for safety
+#    - Adjust prob_clip_bounds to prevent extreme signals
+#    - Use covariance_uncertainty for better risk modeling
+#
+# 5. BACKTESTING:
+#    - Test different min_confidence values: [0.03, 0.05, 0.07, 0.10]
+#    - Compare alpha_scaling_methods for your data
+#    - Validate performance across different market regimes
