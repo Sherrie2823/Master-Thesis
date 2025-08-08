@@ -204,7 +204,7 @@ class BankingXGBoostV4:
         best_params_list = []
         
         # 外层时序分割
-        outer_cv = TimeSeriesSplit(n_splits=self.n_splits)
+        outer_cv = TimeSeriesSplit(n_splits=5)
         
         self.log(f"   🔄 嵌套CV: {self.n_splits}折外层验证")
         
@@ -219,7 +219,7 @@ class BankingXGBoostV4:
             y_val_fold = y_train.iloc[val_idx]
             
             # 内层时序交叉验证进行超参数调优
-            inner_cv = TimeSeriesSplit(n_splits=3)
+            inner_cv = TimeSeriesSplit(n_splits=5)
             
             # 粗搜索
             model_coarse = xgb.XGBClassifier(random_state=42, n_jobs=-1, eval_metric='logloss', verbosity=0)

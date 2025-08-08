@@ -1,5 +1,3 @@
-# XGBoost V5 - 七步改进优化版
-# 在 xgboost_v5.py 文件的最开头（import之前）添加以下代码：
 
 
 import os
@@ -29,7 +27,9 @@ import os
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
+from xgboost import XGBClassifier
+from sklearn.model_selection import RandomizedSearchCV, GridSearchCV, TimeSeriesSplit
+from sklearn.ensemble import BaggingClassifier
 from sklearn.metrics import (accuracy_score, f1_score, precision_score, recall_score,
                              roc_auc_score, average_precision_score)
 from sklearn.preprocessing import StandardScaler
@@ -95,12 +95,13 @@ class BankingXGBoostV5:
         self.coarse_param_grid = {
             'n_estimators': [50, 100, 150],
             'max_depth': [3, 5, 7],
-            'learning_rate': [0.01, 0.05, 0.1],
-            'subsample': [0.8, 1.0],
-            'colsample_bytree': [0.8, 1.0],
-            'reg_alpha': [0, 0.1],
-            'reg_lambda': [1],
-            'min_child_weight': [1]
+            'learning_rate': [0.005, 0.01, 0.02],
+            'subsample': [0.6, 0.8, 1.0],
+            'colsample_bytree': [0.6, 0.8, 1.0],
+            'gamma': [0, 0.1, 0.3],
+            'reg_alpha': [0, 0.1, 1],
+            'reg_lambda': [1, 10, 50],
+            'min_child_weight': [1, 3, 5]
         }
         
         self.fine_param_grid = {}  # 动态生成
@@ -385,6 +386,8 @@ class BankingXGBoostV5:
             # 改进四：类别平衡权重
             cnt = Counter(y_train_fold)
             scale_pos_weight = cnt[0] / cnt[1] if cnt[1] > 0 else 1.0
+            self.log(f"⚖️ 类别平衡权重: {scale_pos_weight:.3f}")
+            self.coarse_param_grid['scale_pos_weight'] = [1, scale_pos_weight]
             
             # 粗搜索
             coarse_grid = self.coarse_param_grid.copy()
@@ -536,18 +539,27 @@ class BankingXGBoostV5:
         if self.nested_cv:
             best_params, cv_score = self.nested_cross_validation(X_train, y_train_full)
         else:
-            # 标准方法 - 添加类别平衡权重
-            tscv = TimeSeriesSplit(n_splits=self.n_splits)
-            param_grid = self.coarse_param_grid.copy()
-            param_grid['scale_pos_weight'] = [scale_pos_weight]
             
-            model = xgb.XGBClassifier(
+            # —— 第一阶段：随机搜索 —— 
+            tscv = TimeSeriesSplit(n_splits=self.n_splits)
+            param_dist = {
+                'max_depth':        [3, 5, 7, 9],
+                'learning_rate':    [0.01, 0.05, 0.1, 0.2],
+                'n_estimators':     [50, 100, 200, 300],
+                'min_child_weight': [1, 3, 5, 7],
+                'gamma':            [0, 0.1, 0.3, 0.5],
+                'subsample':        [0.6, 0.8, 1.0],
+                'colsample_bytree': [0.6, 0.8, 1.0],
+                'scale_pos_weight': [scale_pos_weight],
+            }
+            
+            base_model = xgb.XGBClassifier(
                 random_state=42, n_jobs=4, eval_metric='logloss', 
                 verbosity=0, tree_method='hist', use_label_encoder=False
             )
-            search = RandomizedSearchCV(
-                estimator=model,
-                param_distributions=param_grid,
+            rand_search = RandomizedSearchCV(
+                estimator=base_model,
+                param_distributions=param_dist,
                 n_iter=30,
                 scoring='f1',
                 cv=tscv,
@@ -555,48 +567,88 @@ class BankingXGBoostV5:
                 n_jobs=1,
                 verbose=0
             )
-            search.fit(X_train, y_train_full)
-            best_params = search.best_params_
-            cv_score = search.best_score_
+            rand_search.fit(X_train_full_scaled, y_train_full)
+            coarse_best = rand_search.best_params_
+            coarse_score = rand_search.best_score_
+            self.log(f"🔍 随机搜索最佳参数: {coarse_best}, CV得分={coarse_score:.4f}")
         
-        self.log(f"   ✅ 最佳参数: {best_params}")
-        self.log(f"   ✅ CV F1得分: {cv_score:.4f}")
+        # —— 第二阶段：细网格搜索 —— 
+        # 在 coarse_best 周围做一个小范围网格
+            param_grid_fine = {
+                'max_depth':        sorted({max(1, coarse_best['max_depth']-2), coarse_best['max_depth'], coarse_best['max_depth']+2}),
+            'learning_rate':    [coarse_best['learning_rate']*0.5, coarse_best['learning_rate'], coarse_best['learning_rate']*1.5],
+            'n_estimators':     sorted({max(10, coarse_best['n_estimators']-50), coarse_best['n_estimators'], coarse_best['n_estimators']+50}),
+            'min_child_weight': sorted({1, coarse_best['min_child_weight'], coarse_best['min_child_weight']+2}),
+            'gamma':            [max(0, coarse_best['gamma']-0.1), coarse_best['gamma'], coarse_best['gamma']+0.1],
+            'subsample':        [coarse_best['subsample']],
+            'colsample_bytree': [coarse_best['colsample_bytree']],
+            'scale_pos_weight': [scale_pos_weight],
+            }
+
+            grid_search = GridSearchCV(
+                estimator=base_model,
+                param_grid=param_grid_fine,
+                scoring='f1',
+                cv=tscv,
+                n_jobs=1,
+                verbose=0,
+            )
+            grid_search.fit(X_train_full_scaled, y_train_full)
+            best_params = grid_search.best_params_
+            cv_score    = grid_search.best_score_
+            self.log(f"✅ 细网格搜索最佳参数: {best_params}, CV得分={cv_score:.4f}")
         
-        # 训练最终模型
-        final_model = xgb.XGBClassifier(
+        # 用同一个超参的 XGB 做 base_estimator，外面套 Bagging 降低方差
+        base_xgb = xgb.XGBClassifier(
             **best_params, 
-            random_state=42, n_jobs=4, eval_metric='logloss', 
+            random_state=42, n_jobs=1, eval_metric='logloss', 
             verbosity=0, tree_method='hist', use_label_encoder=False
         )
         
-        # 改进五：使用自定义F1早停
-        X_train_split = X_train.iloc[:int(len(X_train)*0.8)]
-        X_val_split = X_train.iloc[int(len(X_train)*0.8):]
-        y_train_split = y_train_full.iloc[:int(len(y_train_full)*0.8)]
-        y_val_split = y_train_full.iloc[int(len(y_train_full)*0.8):]
-        
-        final_model.fit(
-            X_train_split, y_train_split,
-            eval_set=[(X_val_split, y_val_split)],
+        final_model = BaggingClassifier(
+            estimator=base_xgb,
+            n_estimators=5,      # 5 个 bootstrap 子模型
+            max_samples=0.8,     # 每个子模型取 80% 的样本重采样
+            n_jobs=5,            # 并行训练 5 个子模型
+            random_state=42,
             verbose=False
         )
         
-        # 在全数据上重新训练
-        final_model.fit(X_train, y_train_full)
+        final_model.fit(
+            X_train_scaled,    # 用你完整的训练集（已 scale & select）的 DataFrame
+            y_train_full,           # 对应的标签
+        )
+        
+        # 计算每一个子模型的 feature_importances_
+        all_imps = np.array([
+            est.feature_importances_
+            for est in final_model.estimators_
+        ])
+        
+        # 平均它们
+        mean_imp = all_imps.mean(axis=0)
+        # 手动给 bagged 对象绑一个属性  
+        final_model.feature_importances_ = mean_imp
         
         # 改进二：概率校准
-        self.log(f"   🔧 应用概率校准 (方法: {self.calibration_method})...")
+        self.log(f"   🔧 概率校准 sigmoid + 3 折时序CV")
+        # 让它自己在内部做 CV，不用 prefit
+        tscv_cal = TimeSeriesSplit(n_splits=3)
         calibrator = CalibratedClassifierCV(
             estimator=final_model,
             method='sigmoid',
-            cv='prefit'
+            cv=3
         )
         
-        # 使用训练数据的一部分进行校准
-        cal_X = X_train.iloc[-int(len(X_train)*0.3):]  # 使用最后30%作为校准集
-        cal_y = y_train_full.iloc[-int(len(y_train_full)*0.3):]
-        calibrator.fit(cal_X, cal_y)
+        # 用整个训练集做校准（它内部会按 tscv_cal 划分）
+        calibrator.fit(
+            X_train_scaled[selected_features],
+            y_train_full
+        )
+        
+        # 存下来
         self.calibrated_models[stock] = calibrator
+        self.log("⚙️ 概率校准完成")
         
         # 预测
         y_pred_train = calibrator.predict(X_train)
@@ -628,10 +680,33 @@ class BankingXGBoostV5:
         self.log(f"   🎯 最优阈值: {optimal_threshold:.3f}")
         
         # 特征重要性分析 - 改进六
-        feature_importance = pd.DataFrame({
-            'feature': selected_features,
-            'importance': final_model.feature_importances_
-        }).sort_values('importance', ascending=False)
+        # 1) 先拿到每个特征的重要性数组（长度都是 len(selected_features)）
+        if hasattr(final_model, 'feature_importances_'):
+        # 普通 XGBClassifier
+            imps = final_model.feature_importances_
+        else:
+        # 兜底
+            imps = np.zeros(len(selected_features))
+        
+        # 如果长度对不上，就警告并重置为 0 向量
+        if len(imps) != len(selected_features):
+            self.log(
+                f"⚠️ 特征重要性长度不一致: got {len(imps)} values, "
+                f"but selected_features has {len(selected_features)} → reset to zeros"
+            )
+            imps = np.zeros(len(selected_features))
+            
+        # 构造 Series，自动对齐，万一还是不对也补 0
+        ser = pd.Series(imps, index=selected_features)  \
+            .reindex(selected_features, fill_value=0)
+            
+        # 排序、重命名成 DataFrame
+        feature_importance = (
+            ser.sort_values(ascending=False)
+                .reset_index()
+                .rename(columns={"index": "feature", 0: "importance"})
+        )
+
         
         # 显示最重要和最不重要的特征
         if self.verbose:
@@ -667,7 +742,7 @@ class BankingXGBoostV5:
             'selected_features': selected_features,
             'best_params': best_params,
             'optimal_threshold': optimal_threshold,
-            'calibration_method': self.calibration_method
+            'calibration_method': 'sigmoid'
         }
 
 # 1) skops 序列化，保留 .skops
