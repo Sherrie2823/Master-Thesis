@@ -36,9 +36,11 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.feature_selection import SelectKBest, f_classif, RFE
 from sklearn.calibration import CalibratedClassifierCV  # 改进二：概率校准
 from collections import Counter  # 改进四：类别平衡
+from pypfopt import EfficientFrontier, risk_models, expected_returns # 8月8日改进
 import joblib
 from skops.io import dump
 from tqdm.auto import tqdm
+from numbers import Integral
 import warnings
 from scipy.stats import uniform, randint
 import traceback
@@ -58,6 +60,11 @@ class BankingXGBoostV5:
     def __init__(self, top_k_features=200, n_splits=5, test_size=0.2,
                  pre_rfe_features=200, nested_cv=False, verbose=True,
                  enable_tech_indicators=True, calibration_method='sigmoid'):
+        # --- 防呆：确保是正整数 ---
+        if not isinstance(top_k_features, Integral) or int(top_k_features) <= 0:
+            print("[WARN] top_k_features 非法，使用默认值 50")
+            top_k_features = 50
+        self.top_k_features = int(top_k_features)
         """
         XGBoost V5 - 七步改进优化版
         
@@ -88,7 +95,6 @@ class BankingXGBoostV5:
         self.scalers = {}
         self.feature_selectors = {}
         self.results = {}
-        self.optimal_thresholds = {}  # 改进一：存储最优阈值
         self.calibrated_models = {}  # 改进二：存储校准后模型
         
         # 两阶段超参数搜索
@@ -255,81 +261,83 @@ class BankingXGBoostV5:
 
     def hierarchical_feature_selection(self, X_train, y_train, stock):
         """
-        分层特征选择: SelectKBest -> XGB Importance -> RFE
-        改进六：在此阶段可以剔除弱特征
+        分层特征选择: SelectKBest -> XGB Importance -> RFE（可选）
+        - 对小特征数场景做了兜底
+        - 对 XGB 重要性失败时用方差/相关性兜底
         """
         n_samples = len(X_train)
         original_features = X_train.shape[1]
-        
+        k = int(self.top_k_features)
+        k = max(1, min(k, original_features))  # 不超过现有特征数
+
         self.log(f"   🔍 开始分层特征选择 (原始特征: {original_features})")
-        
-        # 第一层: 统计筛选 (快速)
+
+        # 1) 统计筛选（如果特征很多）
         if original_features > self.pre_rfe_features:
             selector_stat = SelectKBest(score_func=f_classif, k=self.pre_rfe_features)
             X_stat = selector_stat.fit_transform(X_train, y_train)
             selected_features_stat = X_train.columns[selector_stat.get_support()].tolist()
             self.log(f"   📉 统计筛选: {original_features} -> {len(selected_features_stat)}")
+            X_stat_df = pd.DataFrame(X_stat, index=X_train.index, columns=selected_features_stat)
         else:
-            X_stat = X_train
-            selected_features_stat = X_train.columns.tolist()
-            self.log(f"   📉 跳过统计筛选 (特征数已少于阈值)")
-        
-        # 第二层: XGBoost重要性
-        xgb_selector = xgb.XGBClassifier(
-            n_estimators=100,
-            max_depth=6,
-            learning_rate=0.1,
-            random_state=42,
-            n_jobs=4,
-            eval_metric='logloss',
-            verbosity=0
-        )
-        xgb_selector.fit(X_stat, y_train)
-        
-        # 选择重要性最高的特征
-        importances = pd.Series(xgb_selector.feature_importances_, index=selected_features_stat)
-        xgb_top_features = importances.nlargest(min(self.top_k_features * 2, len(selected_features_stat))).index.tolist()
-        self.log(f"   🚀 XGB重要性筛选: {len(selected_features_stat)} -> {len(xgb_top_features)}")
-        
-        # 改进六：特征重要性可视化和弱特征剔除
+            X_stat_df = X_train.copy()
+            selected_features_stat = X_stat_df.columns.tolist()
+            self.log("   📉 跳过统计筛选 (特征数已少于阈值)")
+
+        # 2) XGBoost 重要性（带兜底）
+        try:
+            xgb_selector = xgb.XGBClassifier(
+                n_estimators=100, max_depth=6, learning_rate=0.1,
+                random_state=42, n_jobs=4, eval_metric='logloss', verbosity=0
+            )
+            xgb_selector.fit(X_stat_df, y_train)
+            importances = pd.Series(
+                xgb_selector.feature_importances_,
+                index=X_stat_df.columns
+            )
+        # 取 top(2k) 进入下一步
+            xgb_top_features = importances.nlargest(min(k * 2, len(importances))).index.tolist()
+            self.log(f"   🚀 XGB重要性筛选: {len(selected_features_stat)} -> {len(xgb_top_features)}")
+        except Exception as e:
+            self.log(f"   ⚠️ XGB重要性筛选失败: {e}，改用方差兜底", "WARNING")
+        # 用方差最大的特征兜底
+            var_series = X_stat_df.var().sort_values(ascending=False)
+            xgb_top_features = var_series.index[:min(k * 2, len(var_series))].tolist()
+        # 为了后续日志输出，构造一个“伪 importances”
+            importances = var_series
+
         if self.verbose:
-            weak_features = importances.nsmallest(10)
-            self.log(f"   📊 最弱的10个特征: {weak_features.to_dict()}")
-        
-        # 第三层: RFE (仅在合理样本数下使用)
-        if n_samples >= 500 and len(xgb_top_features) > self.top_k_features:
-            self.log(f"   🔄 执行RFE (样本数充足: {n_samples})")
+            weak_features = importances.nsmallest(min(10, len(importances)))
+            self.log(f"   📊 最弱特征(样本): {weak_features.to_dict()}")
+
+    # 3) RFE（样本足够且特征仍多时）
+        if n_samples >= 500 and len(xgb_top_features) > k:
+            self.log(f"   🔄 执行RFE (样本数={n_samples}, 候选={len(xgb_top_features)}, 选{k})")
             X_xgb = X_train[xgb_top_features]
-            
             rfe = RFE(
                 estimator=xgb.XGBClassifier(
-                    n_estimators=50,
-                    max_depth=6,
-                    learning_rate=0.1,
-                    random_state=42,
-                    n_jobs=4,
-                    eval_metric='logloss',
-                    verbosity=0
+                    n_estimators=50, max_depth=6, learning_rate=0.1,
+                    random_state=42, n_jobs=4, eval_metric='logloss', verbosity=0
                 ),
-                n_features_to_select=self.top_k_features,
-                step=0.1
+                n_features_to_select=k, step=0.1
             )
-            
-            with tqdm(desc="RFE进度", disable=not self.verbose) as pbar:
+            try:
                 rfe.fit(X_xgb, y_train)
-                pbar.update(1)
-            
-            final_features = X_xgb.columns[rfe.support_].tolist()
-            self.log(f"   🎯 RFE筛选: {len(xgb_top_features)} -> {len(final_features)}")
+                final_features = X_xgb.columns[rfe.support_].tolist()
+                self.log(f"   🎯 RFE筛选: {len(xgb_top_features)} -> {len(final_features)}")
+            except Exception as e:
+                self.log(f"   ⚠️ RFE失败: {e}，直接取前{k}个", "WARNING")
+                final_features = xgb_top_features[:k]
         else:
             if n_samples < 500:
                 self.log(f"   ⚠️ RFE跳过 (样本数不足: {n_samples})")
-            elif len(xgb_top_features) <= self.top_k_features:
-                self.log(f"   ⚠️ RFE跳过 (特征数已达标: {len(xgb_top_features)})")
-            final_features = xgb_top_features[:self.top_k_features]
-        
+            elif len(xgb_top_features) <= k:
+                self.log(f"   ⚠️ RFE跳过 (候选已≤k: {len(xgb_top_features)})")
+            final_features = xgb_top_features[:k]
+
         self.log(f"   ✅ 最终选择特征: {len(final_features)}")
         return final_features
+
 
     def optimize_threshold(self, y_true, y_prob):
         """
@@ -651,33 +659,37 @@ class BankingXGBoostV5:
         self.log("⚙️ 概率校准完成")
         
         # 预测
+        # 预测
         y_pred_train = calibrator.predict(X_train)
-        y_pred_test = calibrator.predict(X_test)
-        y_prob_train = calibrator.predict_proba(X_train)[:, 1]
-        y_prob_test = calibrator.predict_proba(X_test)[:, 1]
-        
-        # 改进一：阈值优化
-        optimal_threshold, best_f1 = self.optimize_threshold(y_test, y_prob_test)
-        self.optimal_thresholds[stock] = optimal_threshold
-        
-        # 使用最优阈值重新预测
-        y_pred_test_optimal = (y_prob_test >= optimal_threshold).astype(int)
-        y_pred_train_optimal = (y_prob_train >= optimal_threshold).astype(int)
-        
-        # 计算指标 - 使用最优阈值
-        train_metrics = self.calculate_metrics(y_train_full, y_pred_train_optimal, y_prob_train)
-        test_metrics = self.calculate_metrics(y_test, y_pred_test_optimal, y_prob_test)
-        
-        # 添加阈值信息到结果中
-        train_metrics['optimal_threshold'] = optimal_threshold
-        test_metrics['optimal_threshold'] = optimal_threshold
-        
-        self.log(
-            f"   ✅ 训练指标: Acc={train_metrics['accuracy']:.4f}, F1={train_metrics['f1']:.4f}, AUC={train_metrics['roc_auc']:.4f}")
-        self.log(
-            f"   ✅ 测试指标: Acc={test_metrics['accuracy']:.4f}, F1={test_metrics['f1']:.4f}, AUC={test_metrics['roc_auc']:.4f}")
-        self.log(f"   ✅ PR-AUC: {test_metrics['pr_auc']:.4f}")
-        self.log(f"   🎯 最优阈值: {optimal_threshold:.3f}")
+        y_pred_test  = calibrator.predict(X_test)
+
+        # 1) 先拿出 numpy 概率（供指标计算）
+        y_prob_train_np = calibrator.predict_proba(X_train)[:, 1]
+        y_prob_test_np  = calibrator.predict_proba(X_test)[:, 1]
+
+        # 2) 再把概率转成带日期索引的 Series（用于保存与后续拼接）
+        y_prob_train = pd.Series(y_prob_train_np, index=X_train.index, name=f'{stock}_prob')
+        y_prob_test  = pd.Series(y_prob_test_np,  index=X_test.index,  name=f'{stock}_prob')
+
+        # 评估（用 numpy 数组或 Series.values 都可以）
+        train_metrics = {
+            'roc_auc': roc_auc_score(y_train_full, y_prob_train_np),
+            'pr_auc':  average_precision_score(y_train_full, y_prob_train_np),
+        }
+        test_metrics = {
+            'roc_auc': roc_auc_score(y_test, y_prob_test_np),
+            'pr_auc':  average_precision_score(y_test, y_prob_test_np),
+        }
+
+        self.log(f"✅ 训练指标: AUC={train_metrics['roc_auc']:.4f}")
+        self.log(f"✅ 测试指标:  AUC={test_metrics['roc_auc']:.4f}")
+        self.log(f"✅ PR-AUC:   训练={train_metrics['pr_auc']:.4f}  测试={test_metrics['pr_auc']:.4f}")
+
+        # 3) 保存：同时保存 train/test 两段概率（带索引的 Series）
+        res = self.results.setdefault(stock, {})
+        res['y_prob_train'] = y_prob_train
+        res['y_prob_test']  = y_prob_test
+
         
         # 特征重要性分析 - 改进六
         # 1) 先拿到每个特征的重要性数组（长度都是 len(selected_features)）
@@ -729,7 +741,6 @@ class BankingXGBoostV5:
             'best_params': best_params,
             'cv_score': cv_score,
             'scaler': scaler_sel,
-            'optimal_threshold': optimal_threshold,
             'calibration_method': self.calibration_method
         }
         
@@ -741,7 +752,6 @@ class BankingXGBoostV5:
             'scaler': scaler_sel,
             'selected_features': selected_features,
             'best_params': best_params,
-            'optimal_threshold': optimal_threshold,
             'calibration_method': 'sigmoid'
         }
 
@@ -759,6 +769,40 @@ class BankingXGBoostV5:
 
         return test_metrics
         
+    def get_probability_signal(
+        self,
+        stock: str,
+        task_type: str = 'direction',
+        horizon: str = '15D'
+    ) -> pd.Series:
+        """
+        返回 XGBoost 的预测概率(不归一化), index=测试期日期
+        """
+        self.train_model_v5(stock, task_type=task_type, horizon=horizon)
+        probs: pd.Series = self.results[stock]['y_prob_test'].copy()
+        return probs  # 不要在这里归一化
+
+    def get_full_period_probability(self, stock: str, horizon='5D', task_type='direction'):
+        """
+        训练一次并返回【训练+测试】全期的概率（注意：训练段属于样本内，偏乐观）
+        """
+        # 1) 训练，内部会把 train/test 段概率都存进 self.results
+        self.train_model_v5(stock, task_type=task_type, horizon=horizon)
+
+        # 2) 取出两个段，拼接并按日期排序
+        y_tr = self.results[stock].get('y_prob_train')
+        y_te = self.results[stock].get('y_prob_test')
+
+        if y_tr is None and y_te is None:
+            raise RuntimeError(f"{stock} 没有可用的概率序列（train/test 为空）")
+
+        parts = [s for s in [y_tr, y_te] if s is not None]
+        probs = pd.concat(parts).sort_index()  # 全期概率（样本内+样本外）
+
+        # 3) 存一下，方便后续复用
+        self.results[stock]['y_prob_full'] = probs
+        return probs
+
 
     def calculate_metrics(self, y_true, y_pred, y_prob):
         """计算评估指标"""
@@ -824,7 +868,6 @@ class BankingXGBoostV5:
                         'F1_Score': metrics['f1'],
                         'ROC_AUC': metrics['roc_auc'],
                         'PR_AUC': metrics['pr_auc'],
-                        'Optimal_Threshold': metrics['optimal_threshold'],
                         'Calibration_Method': self.calibration_method
                     })
                     
@@ -833,7 +876,6 @@ class BankingXGBoostV5:
                         'Acc': f"{metrics['accuracy']:.3f}",
                         'F1': f"{metrics['f1']:.3f}",
                         'AUC': f"{metrics['roc_auc']:.3f}",
-                        'Thr': f"{metrics['optimal_threshold']:.2f}"
                     })
                     
                     # 生成特征重要性可视化
@@ -867,10 +909,6 @@ class BankingXGBoostV5:
                 std_val = df_summary[metric].std()
                 self.log(f"   {metric.upper()}: {mean_val:.4f} (±{std_val:.4f})")
             
-            # 阈值统计
-            threshold_mean = df_summary['optimal_threshold'].mean()
-            threshold_std = df_summary['optimal_threshold'].std()
-            self.log(f"   THRESHOLD: {threshold_mean:.4f} (±{threshold_std:.4f})")
             
             # 最佳表现股票
             best_stock = df_summary.loc[df_summary['f1'].idxmax()]
@@ -880,6 +918,64 @@ class BankingXGBoostV5:
             self.analyze_improvements(df_summary)
         
         return summary
+
+    def collect_probabilities_for_universe(self, stocks=None, horizon='5D',
+                                       save_dir='results', prefix='xgb_probs',
+                                       resume=True):
+        """
+        批量生成全市场（多只股票）的 OOS 概率，并保存成一个对齐的矩阵 CSV。
+        - stocks: 要跑的股票列表，默认 self.banking_stocks
+        - horizon: '1D' / '5D' / '15D' 等
+        - save_dir: 保存目录
+        - prefix: 输出文件名前缀
+        - resume: 如已有单票中间结果，自动复用（断点续跑）
+        返回:pd.DataFrame:index=测试期日期:columns=股票代码，值=上涨概率
+        """   
+
+        os.makedirs(save_dir, exist_ok=True)
+        if stocks is None:
+            stocks = self.banking_stocks
+        
+        probs_map = {}
+        
+        for s in stocks:
+            try:
+            # 单票中间文件（便于断点续跑）
+                part_file = os.path.join(save_dir, f'prob_{s}_{horizon}.csv')
+
+                if resume and os.path.exists(part_file):
+                    ser = pd.read_csv(part_file, index_col=0, parse_dates=True).iloc[:, 0]
+                    ser.name = s
+                    self.log(f"   ♻️  复用已有概率: {part_file}")
+                else:
+                # 你之前测试过的函数：返回 y_prob_test 的 Series（index=测试集日期）
+                    ser = self.get_probability_signal(stock=s, horizon=horizon)
+                # 单票立即落盘，防止中途崩溃丢结果
+                    ser.to_frame(name=s).to_csv(part_file, index_label='Date')
+                    self.log(f"   💾 已保存 {s} 概率: {part_file}")
+
+                probs_map[s] = ser
+            
+            except Exception as e:
+                self.log(f"[skip] {s}: {e}", "WARNING")
+                continue
+        
+        # 对齐日期并拼成矩阵
+        if len(probs_map) == 0:
+            raise RuntimeError("没有任何股票的概率可用，检查数据或目标列。")
+        
+        probs_df = pd.DataFrame(probs_map).sort_index().dropna(how='all')
+        
+             # 统一保存一个大文件
+        ts = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S")
+        out_file = os.path.join(save_dir, f"{prefix}_{horizon}_{ts}.csv")
+        probs_df.to_csv(out_file, index_label='Date')
+        self.log(f"✅ 概率矩阵已保存: {out_file} | 形状={probs_df.shape}")
+
+    # 也放到 self.results 里，方便外部使用
+        self.results['probs_matrix'] = probs_df
+        return probs_df
+
 
     def analyze_improvements(self, df_summary):
         """
@@ -898,10 +994,6 @@ class BankingXGBoostV5:
         f1_rate = f1_good / total_models
         self.log(f"   📈 F1 > 0.5 的模型: {f1_good}/{total_models} ({f1_rate:.1%})")
         
-        # 阈值分布分析（改进一的效果）
-        default_threshold_count = (np.abs(df_summary['optimal_threshold'] - 0.5) < 0.05).sum()
-        optimized_threshold_count = total_models - default_threshold_count
-        self.log(f"   🎯 使用优化阈值的模型: {optimized_threshold_count}/{total_models}")
         
         # 校准方法效果
         self.log(f"   🔧 概率校准方法: {self.calibration_method}")

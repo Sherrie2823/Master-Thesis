@@ -21,12 +21,21 @@ Author: Banking & Digital Finance Student
 Date: Jul 2025
 """
 
+
 import sys
 from pathlib import Path
+
+
+# ⬇️ main.py 位于 .../src/models/traditional/
+HERE = Path(__file__).resolve()
+PROJECT_ROOT = HERE.parents[3]         # -> .../Sherry-s-Master-Thesis
+sys.path.append(str(PROJECT_ROOT))     # 让 import 按仓库根解析
+DATA_DIR = PROJECT_ROOT / "data" / "raw"
+
 import numpy as np
 import warnings
 from datetime import datetime
-
+import pandas as pd
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
 
@@ -36,7 +45,7 @@ sys.path.append(str(PROJECT_ROOT))
 
 # Import project modules
 try:
-    from src.models.traditional.config import (
+    from real_data.config import (
         RollingOptimizationConfig,
         BacktestConfig,
         PlotConfig,
@@ -50,6 +59,125 @@ except ImportError as e:
     print(f"❌ Import error: {e}")
     print("Please ensure all required files are in the project directory")
     sys.exit(1)
+
+# === Significance tests helpers (only used in main.py) ===
+
+def _newey_west_t(x: np.ndarray, lags: int | None = None):
+    """NW(HAC) t-stat for mean(x)."""
+    x = np.asarray(x, float)
+    x = x[~np.isnan(x)]
+    T = len(x)
+    if T < 10:
+        return np.nan, np.nan
+    mu = x.mean()
+    e  = x - mu
+    if lags is None:
+        lags = int(round(T ** (1/3)))
+        lags = max(1, min(lags, T-1))
+    gamma0 = (e @ e) / T
+    var = gamma0
+    for L in range(1, lags + 1):
+        w = 1 - L/(lags+1)
+        cov = (e[L:] @ e[:-L]) / T
+        var += 2 * w * cov
+    se = (var / T) ** 0.5
+    tval = mu / se if se > 0 else np.nan
+    return mu, tval
+
+def _block_bootstrap_sharpe_diff_p(r_a: np.ndarray, r_b: np.ndarray,
+                                   B: int = 2000, block: int = 10, seed: int = 42):
+    """p-value for Sharpe(a)-Sharpe(b) via circular block bootstrap."""
+    rng = np.random.default_rng(seed)
+    r_a = np.asarray(r_a, float); r_b = np.asarray(r_b, float)
+    T = min(len(r_a), len(r_b))
+    r_a, r_b = r_a[:T], r_b[:T]
+
+    def sharpe(x):
+        s = x.std(ddof=1)
+        return x.mean()/s if s > 0 else 0.0
+
+    obs = sharpe(r_a) - sharpe(r_b)
+
+    idx = np.arange(T)
+    def resample_take():
+        k = int(np.ceil(T / block))
+        starts = rng.integers(0, T, size=k)
+        take = np.concatenate([ (idx[s:(s+block)] % T) for s in starts ])[:T]
+        return take
+
+    ge = 0
+    for _ in range(B):
+        take = resample_take()
+        val = sharpe(r_a[take]) - sharpe(r_b[take])
+        if abs(val) >= abs(obs):
+            ge += 1
+    pval = (ge + 1) / (B + 1)
+    return obs, pval
+
+def _capm_alpha(r_s: np.ndarray, r_b: np.ndarray, rf_daily: float = 0.0):
+    """CAPM alpha (annualized), NW t(alpha), beta, R^2."""
+    r_s = np.asarray(r_s, float); r_b = np.asarray(r_b, float)
+    T = min(len(r_s), len(r_b))
+    r_s, r_b = r_s[:T], r_b[:T]
+    xs = r_b - rf_daily
+    ys = r_s - rf_daily
+    X = np.vstack([np.ones(T), xs]).T
+    beta = np.linalg.lstsq(X, ys, rcond=None)[0]
+    a, b = beta[0], beta[1]
+    resid = ys - (a + b*xs)
+    # 用 NW 对 alpha 做 t（近似：对 resid+a 的均值做 HAC）
+    _, t_alpha = _newey_west_t(resid + a)
+    alpha_ann = a * 252.0
+    ss_tot = np.sum((ys - ys.mean())**2)
+    ss_res = np.sum(resid**2)
+    R2 = 1 - ss_res/ss_tot if ss_tot > 0 else np.nan
+    return alpha_ann, t_alpha, b, R2
+
+def build_significance_table(optimizer, rf_annual: float = 0.02, benchmark: str = "equal_weight"):
+    """Assemble significance table from optimizer.portfolio_results."""
+    out = []
+    rf_daily = rf_annual/252.0
+
+    # 选择基准（没有的话就用第一个策略兜底）
+    if benchmark not in optimizer.portfolio_results:
+        benchmark = next(iter(optimizer.portfolio_results.keys()))
+    r_bench = np.array(optimizer.portfolio_results[benchmark]['returns_history'], float)
+
+    for name, res in optimizer.portfolio_results.items():
+        r = np.array(res['returns_history'], float)
+        if len(r) < 30:  # 太短跳过
+            continue
+
+        # 1) 均值超额收益 (对无风险)
+        mu_ex, t_ex = _newey_west_t(r - rf_daily)
+
+        # 2) Sharpe 与 Sharpe 差
+        mu_r, _ = _newey_west_t(r)
+        vol = np.std(r, ddof=1)
+        sharpe = mu_r/vol if vol > 0 else np.nan
+        sdiff, p_sdiff = _block_bootstrap_sharpe_diff_p(r, r_bench)
+
+        # 3) CAPM alpha / beta / R2（用基准作“市场”）
+        alpha_ann, t_alpha, beta, R2 = _capm_alpha(r, r_bench, rf_daily)
+
+        out.append({
+            "Strategy": name.replace('_',' ').title(),
+            "Obs": len(r),
+            "Mean Excess (bp/day)": mu_ex*1e4,
+            "t(Mean Excess)": t_ex,
+            "Sharpe (daily)": sharpe,
+            "SharpeDiff vs Bench": sdiff,
+            "p(SharpeDiff)": p_sdiff,
+            "Alpha (annual %)": alpha_ann*100,
+            "t(Alpha)": t_alpha,
+            "Beta": beta,
+            "R2": R2,
+            "Bench": benchmark.replace('_',' ').title()
+        })
+    df = pd.DataFrame(out)
+    return df.sort_values("Sharpe (daily)", ascending=False)
+
+
 
 
 class PortfolioOptimizationManager:
@@ -105,8 +233,13 @@ class PortfolioOptimizationManager:
         print("-" * 50)
 
         try:
+            data_dir = PROJECT_ROOT / "data" / "raw"
+        # >>> Debug: 看看路径是否存在，以及里面有哪些 CSV
+            print(f"[DEBUG] data_dir = {DATA_DIR} | exists={DATA_DIR.exists()}")
+            print(f"[DEBUG] files = {[p.name for p in DATA_DIR.glob('*.csv')]}")
+
             self.optimizer = RollingPortfolioOptimizer(
-                data_path=str(PROJECT_ROOT / "data" / "raw"),
+                data_path=DATA_DIR,
                 rebalance_freq=self.config['rebalance_frequency'],
                 min_history=self.config['min_history'],
                 transaction_cost=self.config['transaction_cost'],
@@ -157,6 +290,26 @@ class PortfolioOptimizationManager:
                 return False
 
             print("✅ Rolling optimization completed successfully")
+            try:
+                import pandas as pd, glob, os
+                # 取最新的概率矩阵（你 test_xgb_weights.py 保存的文件）
+                prob_files = sorted(glob.glob(str(PROJECT_ROOT / "results" / "xgb_probs_5D_*.csv")))
+                if not prob_files:
+                    print("⚠️ 未找到 xgb_probs_5D_*.csv，跳过 XGB 概率策略")
+                    return True
+                probs_path = prob_files[-1]
+                probs_df = pd.read_csv(probs_path, index_col=0, parse_dates=True)
+                print(f"📥 Loaded probs: {os.path.basename(probs_path)}, shape={probs_df.shape}")
+
+                # 跑两种权重规则，名字会体现在绩效表里
+                self.optimizer.backtest_xgb_prob_strategy(
+                    probs_df, method='normalize', hold=15, tc=0.001, max_w=0.20, name='xgb_norm_5D_hold15'
+                )
+                self.optimizer.backtest_xgb_prob_strategy(
+                    probs_df, method='topn', top_n=5, hold=15, tc=0.001, max_w=0.20, name='xgb_top5_5D_hold15'
+                )
+            except Exception as e:
+                print(f"❌ XGB 概率策略接入失败: {e}")
             self.logger.info("Rolling optimization completed")
             return True
 
@@ -166,6 +319,8 @@ class PortfolioOptimizationManager:
             import traceback
             traceback.print_exc()
             return False
+        
+    
 
     def analyze_performance(self):
         """Analyze and display performance results"""
@@ -197,6 +352,24 @@ class PortfolioOptimizationManager:
                 print(f"\n🏆 Best Risk-Adjusted Performance:")
                 print(f"Strategy: {best_strategy}")
                 print(f"Sharpe Ratio: {best_sharpe:.3f}")
+            
+            # === Significance tests ===
+            sig_df = build_significance_table(
+                self.optimizer,
+                rf_annual=RollingOptimizationConfig.RISK_FREE_RATE,  # 和你的配置一致
+                benchmark="equal_weight"  # 或 "markowitz_min_vol"
+            )
+            print("\nSignificance tests (HAC & bootstrap):")
+            print(sig_df.to_string(index=False))
+
+            # 保存到 results/
+            from datetime import datetime
+            results_dir = PROJECT_ROOT / "results"
+            results_dir.mkdir(exist_ok=True)
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            sig_path = results_dir / f"significance_tests_{ts}.csv"
+            sig_df.to_csv(sig_path, index=False)
+            print(f"\n✅ Significance table saved -> {sig_path}")
 
             self.logger.info("Performance analysis completed")
             return performance_df

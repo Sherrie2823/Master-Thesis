@@ -37,7 +37,7 @@ sys.path.append(str(PROJECT_ROOT))
 
 # Import project modules
 try:
-    from src.models.traditional.config import (
+    from real_data.config import (
         RollingOptimizationConfig,
         BacktestConfig,
         PerformanceMetrics,

@@ -63,28 +63,64 @@ class RollingPortfolioOptimizer:
         self.setup_rebalancing_schedule()
 
     def load_data(self):
-        """Load stock returns data with comprehensive validation"""
+        """Load stock prices or returns with robust file selection"""
         try:
-            csv_files = list(self.data_path.glob("*.csv"))
-            if not csv_files:
-                raise FileNotFoundError("No CSV files found in data directory")
+            data_dir = Path(self.data_path)
+            if not data_dir.exists():
+                raise FileNotFoundError(f"Data dir not found: {data_dir}")
 
-            # Load first CSV file (assuming it contains price data)
-            df = pd.read_csv(csv_files[0], index_col=0, parse_dates=True)
+            # 1) 先找价格文件，再找收益文件
+            prices_fp = next((p for p in data_dir.glob("banking_prices_10y*.csv")), None)
+            returns_fp = next((p for p in data_dir.glob("banking_returns_10y*.csv")), None)
 
-            if df.shape[1] < 2:
-                raise ValueError("Insufficient number of assets in dataset")
+            source = None
+            prices = None
 
-            # Calculate returns and clean data
-            self.prices = df.sort_index()
-            self.returns = self.prices.pct_change().dropna()
+            if prices_fp and prices_fp.exists():
+                source = prices_fp.name
+                df = pd.read_csv(prices_fp, index_col=0, parse_dates=True)
+                df = df.sort_index()
+                df = df.apply(pd.to_numeric, errors="coerce")
+                prices = df
+                returns = df.pct_change().dropna(how="all")
+            elif returns_fp and returns_fp.exists():
+                source = returns_fp.name
+                df = pd.read_csv(returns_fp, index_col=0, parse_dates=True)
+                df = df.sort_index()
+                returns = df.apply(pd.to_numeric, errors="coerce")
+            else:
+                raise FileNotFoundError(
+                    "Neither banking_prices_10y*.csv nor banking_returns_10y*.csv found "
+                    f"in {data_dir}"
+                )
 
-            # Data validation
-            self._validate_data()
+            # 2) 基础清洗
+            # 丢掉全为空的列
+            returns = returns.dropna(axis=1, how="all")
+            # 行内全部为空则去掉
+            returns = returns.dropna(how="all")
+            # 前后再补一次排序保证稳定
+            returns = returns.sort_index()
 
-            print(f"✅ Loaded returns data: {self.returns.shape}")
-            print(f"Assets: {list(self.returns.columns)}")
-            print(f"Date range: {self.returns.index[0].date()} to {self.returns.index[-1].date()}")
+            # 3) 简单数据质量提示（可选）
+            extreme = (returns.abs() > 0.5).sum().sum()
+            if extreme > 0:
+                print(f"⚠️Warning: {extreme} extreme returns (>50%) detected")
+
+            # 4) 长度校验
+            if len(returns) < (self.min_history + 252):  # 至少训练1年 + 一些OOS
+                raise ValueError(
+                    f"Insufficient data: {len(returns)} observations, need at least "
+                    f"{self.min_history + 252}"
+                )
+
+            # 5) 赋值保存
+            self.prices = prices
+            self.returns = returns
+
+            print(f"✅ Loaded file: {source}")
+            print(f"📈 Returns shape: {self.returns.shape}")
+            print(f"Date range: {self.returns.index[0].date()} → {self.returns.index[-1].date()}")
 
         except Exception as e:
             print(f"❌ Error loading data: {e}")
@@ -452,6 +488,112 @@ class RollingPortfolioOptimizer:
 
         print("\n✅ Rolling optimization completed!")
         return self.portfolio_results
+    
+    def backtest_xgb_prob_strategy(self, probs_df,
+                               method='topn',        # 'topn' 或 'normalize'
+                               top_n=5,              # method='topn' 时生效
+                               min_w=0.00, max_w=0.20,
+                               hold=15,              # 持有期（天）
+                               tc=0.001,             # 交易成本（单边）
+                               t_plus_one=True,      # T+1 生效
+                               name='xgb_prob'):
+        """
+        用外部概率矩阵进行回测，生成组合净值并写入 self.portfolio_results[name]
+        probs_df: 行=日期(index), 列=股票，值=上涨概率(0~1)
+        """
+        assert self.returns is not None, "returns 尚未加载"
+        # 1) 对齐日期 & 资产
+        assets = [c for c in self.returns.columns if c in probs_df.columns]
+        if len(assets) == 0:
+            raise ValueError("probs_df 与 returns 无共同资产列")
+        idx = self.returns.index.intersection(probs_df.index)
+        idx = idx.sort_values()
+        rets = self.returns.loc[idx, assets]
+        probs = probs_df.loc[idx, assets]
+
+        # 2) 概率 -> 当期权重 的规则
+        def prob_to_weights(row):
+            s = row.dropna()
+            if s.empty:
+                return pd.Series(0.0, index=assets)
+            if method == 'normalize':
+                w = s.clip(lower=0)
+                w = w / w.sum() if w.sum() > 0 else pd.Series(1/len(s), index=s.index)
+            else:  # 'topn'
+                k = min(top_n, len(s))
+                sel = s.nlargest(k)
+                w = sel / sel.sum() if sel.sum() > 0 else pd.Series(1/k, index=sel.index)
+            # 约束 + 重新归一
+            w = w.clip(lower=min_w, upper=max_w)
+            w = w / w.sum() if w.sum() > 0 else pd.Series(1/len(w), index=w.index)
+            # 展开到全资产
+            return w.reindex(assets).fillna(0.0)
+    
+        # 3) 回测主循环（支持 T+1 + 持有期 + 成本）
+        pv = 100.0
+        values = [pv]
+        returns_hist = []
+        txn_costs = []
+        rebalance_dates = []
+
+        cur_w = pd.Series(0.0, index=assets)
+        pending_w = cur_w.copy()
+        last_reb_i = -10**9
+        
+        for i, dt in enumerate(idx):
+            # 到期重平衡：生成“新权重”
+            if (i == 0) or (i - last_reb_i) >= hold:
+                new_w = prob_to_weights(probs.loc[dt])
+                if t_plus_one:
+                        # 当天仍用旧权重，交易排到“今日收盘后”
+                    pending_w = new_w
+                else:
+                        # 当天切换，先扣成本再计算今日收益
+                    turnover = (new_w - cur_w).abs().sum()
+                    cost = turnover * tc * pv
+                    pv -= cost
+                    txn_costs.append(cost)
+                    rebalance_dates.append(dt)
+                    cur_w = new_w
+                last_reb_i = i
+
+            
+            # 计算当日收益（用当前权重）
+            day_ret = float((cur_w * rets.loc[dt]).sum())
+            pv *= (1.0 + day_ret)
+            returns_hist.append(day_ret)
+            values.append(pv)
+        
+            # 若 T+1：在“收盘后”切换权重并扣成本（影响次日起的净值）
+            if t_plus_one and (i == last_reb_i):
+                turnover = (pending_w - cur_w).abs().sum()
+                cost = turnover * tc * pv
+                pv -= cost
+                txn_costs.append(cost)
+                rebalance_dates.append(dt)
+                cur_w = pending_w
+
+            # 4) 写入到统一结果容器
+        self.portfolio_results[name] = {
+            'weights_history': [],              # 可选：如需记录可在重平衡日 append(cur_w.values)
+            'returns_history': returns_hist,    # 日度序列
+            'portfolio_values': values,         # 与 returns_hist 对齐（长度= returns+1）
+            'transaction_costs': txn_costs,     # 只在重平衡日记录
+            'rebalance_dates': rebalance_dates, # 重平衡日期列表
+            'optimization_results': []
+        }
+
+        # 5) 辅助打印
+        ann = (values[-1]/values[0])**(252/len(returns_hist)) - 1
+        vol = np.std(returns_hist) * np.sqrt(252)
+        sharpe = (ann - self.risk_free_rate) / vol if vol > 0 else 0.0
+        from datetime import datetime as _dt
+        print(f"\n== XGB Prob Strategy [{name}] ==")
+        print(f"Period: {idx[0].date()} ~ {idx[-1].date()} | Days={len(idx)}")
+        print(f"Ann: {ann:.2%}, Vol: {vol:.2%}, Sharpe: {sharpe:.2f}, "
+            f"Rebals: {len(rebalance_dates)}, TC sum: ${sum(txn_costs):.2f}")
+        return self.portfolio_results[name]
+        
 
     def _calculate_portfolio_performance(self):
         """Calculate portfolio performance between rebalancing dates"""

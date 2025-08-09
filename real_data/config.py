@@ -7,11 +7,14 @@ Updated configuration for rolling optimization framework with expanding windows.
 
 import os
 from pathlib import Path
+from XGboost_v5 import BankingXGBoostV5
+
 
 # ============================================================================
 # PROJECT PATHS
 # ============================================================================
-PROJECT_ROOT = Path("/")
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent  
 DATA_PATH = PROJECT_ROOT / "data" / "raw"
 RESULTS_PATH = PROJECT_ROOT / "results"
 MODELS_PATH = PROJECT_ROOT / "models"
@@ -111,7 +114,7 @@ class RollingOptimizationConfig:
     """Configuration for rolling portfolio optimization with expanding windows"""
 
     # Rolling framework parameters
-    REBALANCE_FREQUENCY = 21  # Monthly rebalancing (21 trading days)
+    REBALANCE_FREQUENCY = 1  # DAILY rebalancing 
     MIN_HISTORY = 252  # Minimum 1 year of data for first optimization
     TRANSACTION_COST = 0.001  # 0.1% transaction cost per rebalancing
 
@@ -146,7 +149,8 @@ class BacktestConfig:
 
     # Walk-forward analysis
     INITIAL_WINDOW = 252  # Initial training window (1 year)
-    STEP_SIZE = 21  # Step size for walk-forward (1 month)
+    STEP_SIZE = 1  # Step size for walk-forward (1 day)
+    HOLDING_PERIOD = 15
 
     # Performance metrics
     BENCHMARK = 'XLF'  # Banking sector ETF benchmark
@@ -434,6 +438,14 @@ def validate_configuration():
     # Check transaction costs
     if RollingOptimizationConfig.TRANSACTION_COST < 0:
         issues.append("Transaction cost cannot be negative")
+        
+    if BacktestConfig.HOLDING_PERIOD < 1:
+        issues.append("HOLDING_PERIOD must be at least 1 day")
+    if BacktestConfig.HOLDING_PERIOD < BacktestConfig.STEP_SIZE:
+        issues.append(
+            f"HOLDING_PERIOD ({BacktestConfig.HOLDING_PERIOD}) "
+            f"must be >= STEP_SIZE ({BacktestConfig.STEP_SIZE}) to avoid overlap"
+        )
 
     if issues:
         print("⚠️  Configuration Issues:")
