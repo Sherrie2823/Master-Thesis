@@ -36,6 +36,7 @@ import numpy as np
 import warnings
 from datetime import datetime
 import pandas as pd
+from real_data.config import PLOTS_PATH
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
 
@@ -386,6 +387,17 @@ class PortfolioOptimizationManager:
 
         try:
             self.optimizer.plot_portfolio_performance()
+            import matplotlib.pyplot as plt
+            from pathlib import Path
+            from datetime import datetime
+
+            Path(PLOTS_PATH).mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            fig = plt.gcf()
+            fig.savefig(Path(PLOTS_PATH) / f"performance_overview_{ts}.png", dpi=300, bbox_inches="tight")
+            fig.savefig(Path(PLOTS_PATH) / f"performance_overview_{ts}.pdf", bbox_inches="tight")
+            plt.close(fig)
+
             print("✅ Performance plots generated successfully")
             self.logger.info("Visualizations generated")
             return True

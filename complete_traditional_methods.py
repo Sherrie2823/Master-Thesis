@@ -531,14 +531,17 @@ class RollingPortfolioOptimizer:
         drawdown = (portfolio_values - peak) / peak
         return np.min(drawdown)
 
-    def plot_portfolio_performance(self):
-        """Plot portfolio performance over time"""
-        plt.figure(figsize=(15, 10))
+    def plot_portfolio_performance(self, save=False, outdir="plots", filename_prefix="performance_overview", show=True):
+        import numpy as np
+        import pandas as pd
+        import matplotlib.pyplot as plt
+        from pathlib import Path
+        from datetime import datetime
 
-        # Create subplot layout
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+        # --- 建图（保持你原来的四宫格布局） ---
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12), dpi=300)
 
-        # Portfolio values over time
+        # 1) 组合净值曲线
         for method_name, results in self.portfolio_results.items():
             if results['portfolio_values']:
                 dates = pd.date_range(
@@ -547,27 +550,27 @@ class RollingPortfolioOptimizer:
                     freq='D'
                 )
                 ax1.plot(dates, results['portfolio_values'],
-                         label=method_name.replace('_', ' ').title(), linewidth=2)
-
+                        label=method_name.replace('_', ' ').title(), linewidth=2)
         ax1.set_title('Portfolio Value Over Time', fontsize=14, fontweight='bold')
         ax1.set_ylabel('Portfolio Value ($)')
         ax1.legend()
         ax1.grid(True, alpha=0.3)
 
-        # Performance comparison
+        # 2) Sharpe 对比
         perf_df = self.calculate_performance_metrics()
-        sharpe_ratios = [float(sr.rstrip('%')) for sr in perf_df['Sharpe Ratio']]
-        ax2.bar(range(len(perf_df)), sharpe_ratios, color='steelblue', alpha=0.7)
-        ax2.set_title('Sharpe Ratio Comparison', fontsize=14, fontweight='bold')
-        ax2.set_ylabel('Sharpe Ratio')
-        ax2.set_xticks(range(len(perf_df)))
-        ax2.set_xticklabels(perf_df['Strategy'], rotation=45, ha='right')
-        ax2.grid(True, alpha=0.3)
+        if not perf_df.empty:
+            sharpe_ratios = [float(sr.rstrip('%')) for sr in perf_df['Sharpe Ratio']]
+            ax2.bar(range(len(perf_df)), sharpe_ratios, alpha=0.7)
+            ax2.set_title('Sharpe Ratio Comparison', fontsize=14, fontweight='bold')
+            ax2.set_ylabel('Sharpe Ratio')
+            ax2.set_xticks(range(len(perf_df)))
+            ax2.set_xticklabels(perf_df['Strategy'], rotation=45, ha='right')
+            ax2.grid(True, alpha=0.3)
 
-        # Drawdown analysis
+        # 3) 回撤
         for method_name, results in self.portfolio_results.items():
             if results['portfolio_values']:
-                values = np.array(results['portfolio_values'])
+                values = np.array(results['portfolio_values'], dtype=float)
                 peak = np.maximum.accumulate(values)
                 drawdown = (values - peak) / peak
                 dates = pd.date_range(
@@ -576,22 +579,19 @@ class RollingPortfolioOptimizer:
                     freq='D'
                 )
                 ax3.fill_between(dates, drawdown, 0, alpha=0.3,
-                                 label=method_name.replace('_', ' ').title())
-
+                                label=method_name.replace('_', ' ').title())
         ax3.set_title('Drawdown Analysis', fontsize=14, fontweight='bold')
-        ax3.set_ylabel('Drawdown (%)')
+        ax3.set_ylabel('Drawdown')
         ax3.legend()
         ax3.grid(True, alpha=0.3)
 
-        # Transaction costs
-        methods = []
-        costs = []
+        # 4) 交易成本
+        methods, costs = [], []
         for method_name, results in self.portfolio_results.items():
             if results['transaction_costs']:
                 methods.append(method_name.replace('_', ' ').title())
                 costs.append(sum(results['transaction_costs']))
-
-        ax4.bar(range(len(methods)), costs, color='coral', alpha=0.7)
+        ax4.bar(range(len(methods)), costs, alpha=0.7)
         ax4.set_title('Total Transaction Costs', fontsize=14, fontweight='bold')
         ax4.set_ylabel('Transaction Costs ($)')
         ax4.set_xticks(range(len(methods)))
@@ -599,7 +599,22 @@ class RollingPortfolioOptimizer:
         ax4.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plt.show()
+
+        # ---- 保存/展示 ----
+        if save:
+            Path(outdir).mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            png_path = Path(outdir) / f"{filename_prefix}_{ts}.png"
+            pdf_path = Path(outdir) / f"{filename_prefix}_{ts}.pdf"
+            fig.savefig(png_path, dpi=300, bbox_inches='tight')
+            fig.savefig(pdf_path, bbox_inches='tight')
+            print(f"✅ Saved plots to:\n   {png_path}\n   {pdf_path}")
+
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
+
 
     def save_results(self, output_dir: str = "results"):
         """Save comprehensive results to files"""
